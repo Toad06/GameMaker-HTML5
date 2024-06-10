@@ -98,6 +98,13 @@ window.yyRequestAnimationFrame =
     window.oRequestAnimationFrame      || 
     window.msRequestAnimationFrame;
 
+window.yyCancelAnimationFrame = 
+    window["cancelAnimationFrame"]       || 
+    window["webkitCancelAnimationFrame"] || 
+    window["mozCancelAnimationFrame"]    || 
+    window["oCancelAnimationFrame"]      || 
+    window["msCancelAnimationFrame"];
+
 if (!window.yyRequestAnimationFrame) {
     // if RAF is somehow amiss but we need short timeouts, register a message handler
     // https://dbaron.org/log/20100309-faster-timeouts
@@ -151,30 +158,41 @@ function exception_unhandled_handler( func )
 
 function yyUnhandledExceptionHandler( event )
 {
-	if ((g_GMLUnhandledExceptionHandler == undefined) || !(g_GMLUnhandledExceptionHandler instanceof Function)) {
-		var string = "Unhandled Exception - " + event.message + " in file " + event.filename + " at line " + event.lineno ;
-		print( string );
-		//alert( string );
-		game_end(-1);
-	} // end if
-	else {
-        let error = event.error; 
+    if ((g_GMLUnhandledExceptionHandler == undefined) || !(g_GMLUnhandledExceptionHandler instanceof Function)) {
+        var string = "Unhandled Exception - " + event.message + " in file " + event.filename + " at line " + event.lineno;
+        print( string );
+        //alert( string );
+        game_end(-1);
+    } // end if
+    else {
+        let errorStruct = event.error;
+        // Construct a GML struct to encapsulate the error details if we don't have one already.
+        if (!(errorStruct instanceof YYErrorObject)) {
+            let message = event.message;
+            let lineno = event.lineno;
+            let script = "";
+            let stacktraceArray = [];
+            errorStruct = new YYErrorObject(message, message, script, lineno, stacktraceArray);
+        }
+        errorStruct.__type = "___struct___";
+        errorStruct.__yyIsGMLObject = true;
 
-        // Construct a GML struct to encapsulate the error details.
-        let errorStruct = { };
-        errorStruct.__type = "___struct___"; 
-        errorStruct.__yyIsGMLObject = true; 
-
-        // Add error details to the struct with a "gml" prefix for each member.
-        errorStruct.gmlmessage = error.message;
-        errorStruct.gmlstacktrace = error.stack;
-
-        // Pass the error struct to the custom error handler
-        var ret = g_GMLUnhandledExceptionHandler( undefined, undefined, errorStruct ); 
+        // Pass the error struct to the custom error handler, then
+        // run it inside a try/catch block, as any exception here would prevent the game from terminating.
+        let ret = -1;
+        try {
+            ret = g_GMLUnhandledExceptionHandler( undefined, undefined, errorStruct );
+        } catch (_ex) {
+            console.error("Error while running custom error handler: " + _ex);
+        }
         game_end( ret );
-	}
-	debugger;
-	return false;
+    }
+    if (g_StartUpState < 3) {
+        // Something went wrong before the game reached its final startup state, we must abort *now*.
+        Run_EndGame(false);
+    }
+    debugger;
+    return false;
 }
 
 function yyUnhandledRejectionHandler( error )
@@ -831,7 +849,7 @@ if( div_a>360 ) div_a-=360;
 // #############################################################################################
 function animate() {
     // once in-game, timing is handled by GameMaker_Tick
-    if (g_StartUpState != 3) window.requestAnimFrame(animate);
+    if (g_StartUpState != 3) g_requestAnimationID = window.requestAnimFrame(animate);
     
 
     if (g_LoadingCanvasCreated) {
@@ -1592,19 +1610,23 @@ function Run_EndGame(_reset) {
 	}
 	g_pInstanceManager.Clear();
 
-	// @if feature("audio")
     if (_reset) {
 		// Just stops all audio instances.
+		// @if feature("audio")
 		audio_stop_all();
+		// @endif audio
 	} else {
 		// Destroys the AudioContext instance.
+		// @if feature("audio")
 		Audio_Quit();
+		// @endif audio
+
+		// Cancels the animation frame request.
+		if (g_requestAnimationID !== 0 && typeof yyCancelAnimationFrame === "function") {
+			yyCancelAnimationFrame(g_requestAnimationID);
+		}
 	}
-    // @endif audio
 }
-
-
-
 
 
 
@@ -2316,7 +2338,7 @@ function GameMaker_Tick()
         // https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#timers
         setTimeout(function() {
             if (window.yyRequestAnimationFrame) {
-                window.yyRequestAnimationFrame(animate);
+                g_requestAnimationID = window.yyRequestAnimationFrame(animate);
             } else {
                 // Don't re-enter, that would be bad.
                 //animate();
@@ -2324,7 +2346,7 @@ function GameMaker_Tick()
         }, delay); 
     } else {
         if (window.yyRequestAnimationFrame) {
-            window.yyRequestAnimationFrame(animate);
+            g_requestAnimationID = window.yyRequestAnimationFrame(animate);
         } else {
             window.postMessage("yyRequestAnimationFrame", "*");
         }
